@@ -615,7 +615,14 @@ module Changelog =
                               RepoUrl = Uri(uri) })
 
                     let newLastEntry =
-                        ChangelogEntry.New(last.AssemblyVersion, last.NuGetVersion, trueChanges)
+                        ChangelogEntry.New(
+                            last.AssemblyVersion,
+                            last.NuGetVersion,
+                            last.Date,
+                            last.Description,
+                            trueChanges,
+                            last.IsYanked
+                        )
 
                     front @ [ newLastEntry ], references
 
