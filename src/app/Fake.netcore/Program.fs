@@ -432,9 +432,11 @@ let main (args: string[]) =
         // See https://github.com/fsharp/FAKE/issues/2406
         printfn "(Warning) Error while Console.ResetColor:"
         reportExn VerboseLevel.Normal e
-#if !NETSTANDARD1_6
-    //if !TargetHelper.ExitCode.exitCode <> 0 then exit !TargetHelper.ExitCode.exitCode
+    // Honour an exit code a script signalled via Environment.ExitCode (e.g. FAKE 4 style scripts
+    // that set it instead of throwing). This must not be gated behind NETSTANDARD1_6: the
+    // Fake.netcore project defines that constant while the fake-cli tool does not, so gating it
+    // made the two shipped runners disagree and let Fake.netcore exit 0 on a failed build.
     if Environment.ExitCode <> 0 then
         exitCode <- Environment.ExitCode
-#endif
+
     exitCode
