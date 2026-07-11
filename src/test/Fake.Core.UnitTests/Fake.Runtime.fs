@@ -282,4 +282,49 @@ printfn "other.fsx"
                        && e.Message.Contains "' doesn't exist")
                       |> Flip.Expect.isTrue (sprintf "Expected a good error message, but got: %s" e.Message)
               finally
-                  Directory.Delete(tmpDir, true) ]
+                  Directory.Delete(tmpDir, true)
+
+          testCase "paket.lock content change invalidates the compiled-script cache hash"
+          <| fun _ ->
+              let lockPath = Path.GetTempFileName()
+
+              try
+                  let baseHash = "scripthash"
+
+                  File.WriteAllText(lockPath, "NUGET\n    FSharp.Core (6.0.0)")
+                  let hash1 = FakeRuntime.computeDependencyAwareHash baseHash lockPath [] []
+
+                  // Same lock content must yield a stable hash, otherwise the cache would never be reused.
+                  FakeRuntime.computeDependencyAwareHash baseHash lockPath [] []
+                  |> Flip.Expect.equal "identical lock content must produce a stable hash" hash1
+
+                  // A paket.lock change must change the hash so the stale DLL is not reused.
+                  File.WriteAllText(lockPath, "NUGET\n    FSharp.Core (7.0.0)")
+                  let hash2 = FakeRuntime.computeDependencyAwareHash baseHash lockPath [] []
+
+                  Expect.notEqual hash2 hash1 "a paket.lock change must change the script cache hash"
+              finally
+                  File.Delete lockPath
+
+          testCase "resolved dependency set drives cache invalidation when no lock file exists"
+          <| fun _ ->
+              let missingLock = Path.GetTempFileName()
+              File.Delete missingLock // ensure it does not exist so the reference fallback is used
+
+              let assembly version : AssemblyInfo =
+                  { FullName = "Lib, Version=" + version
+                    Version = version
+                    Location = "/packages/lib.dll" }
+
+              let hashV1 =
+                  FakeRuntime.computeDependencyAwareHash "h" missingLock [ "/packages/ref.dll" ] [ assembly "1.0.0.0" ]
+
+              // Re-ordering the same reference set must not change the hash (input is sorted).
+              FakeRuntime.computeDependencyAwareHash "h" missingLock [ "/packages/ref.dll" ] [ assembly "1.0.0.0" ]
+              |> Flip.Expect.equal "an unchanged resolved dependency set must produce a stable hash" hashV1
+
+              // A changed resolved version must change the hash even without a lock file present.
+              let hashV2 =
+                  FakeRuntime.computeDependencyAwareHash "h" missingLock [ "/packages/ref.dll" ] [ assembly "2.0.0.0" ]
+
+              Expect.notEqual hashV2 hashV1 "a changed resolved dependency set must change the hash" ]

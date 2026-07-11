@@ -70,4 +70,51 @@ let tests =
                    [ "assembly1.dll"; "assembly2.dll"; "/Parallel"; "/InIsolation" ]
                    "Expected arg file to be correct")
 
-              Expect.isFalse (File.Exists argFile) "File should be deleted" ]
+              Expect.isFalse (File.Exists argFile) "File should be deleted"
+
+          // A negative exit code means the test host itself crashed (e.g. an unhandled CLR exception)
+          // rather than reporting failing tests, so it must fail the build even under DontFailBuild -
+          // otherwise a runner that dies mid-run reports zero failures and the build goes green.
+          testCase "Test that a crashed test host (negative exit code) fails the build even under DontFailBuild"
+          <| fun _ ->
+              let cp =
+                  VSTest.createProcess
+                      Path.GetTempFileName
+                      (fun param ->
+                          { param with
+                              ToolPath = "vstest.exe"
+                              ErrorLevel = Fake.Testing.Common.DontFailBuild })
+                      [| "assembly.dll" |]
+
+              use state = cp.Hook.PrepareState()
+
+              let runWithExitCode (exitCode: int) =
+                  cp.Hook.RetrieveResult(state, System.Threading.Tasks.Task.FromResult { RawExitCode = exitCode })
+                  |> Async.RunSynchronously
+                  |> ignore
+
+              // Negative exit code = crash -> must throw regardless of DontFailBuild.
+              Expect.throws
+                  (fun () -> runWithExitCode -532462766)
+                  "a crashed test host must fail the build even under DontFailBuild"
+
+              // Positive non-zero exit code = ordinary test failure -> honours DontFailBuild (no throw).
+              runWithExitCode 1
+
+          // Under the default ErrorLevel, an ordinary test failure (positive exit code) must fail the build.
+          testCase "Test that a positive exit code fails the build under the default ErrorLevel"
+          <| fun _ ->
+              let cp =
+                  VSTest.createProcess
+                      Path.GetTempFileName
+                      (fun param -> { param with ToolPath = "vstest.exe" })
+                      [| "assembly.dll" |]
+
+              use state = cp.Hook.PrepareState()
+
+              Expect.throws
+                  (fun () ->
+                      cp.Hook.RetrieveResult(state, System.Threading.Tasks.Task.FromResult { RawExitCode = 1 })
+                      |> Async.RunSynchronously
+                      |> ignore)
+                  "a non-zero exit code must fail the build under the default ErrorLevel" ]
