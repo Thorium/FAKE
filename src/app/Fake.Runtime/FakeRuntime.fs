@@ -46,6 +46,35 @@ let internal filterValidAssembly (logLevel: VerboseLevel) (isSdk, isReferenceAss
 
         None
 
+// Fold the resolved dependency set into the cache key. The script hash computed upstream
+// covers only the script text and fsi args, not the paket-resolved references. Without this,
+// a paket.lock change that pulls in new package versions leaves the script hash - and therefore
+// CachedAssemblyFilePath - unchanged, so the DLL compiled against the OLD versions is reused: a
+// MissingMethodException/TypeLoadException at runtime, or silently stale behaviour from inlined
+// values baked into the old assembly. Re-hashing the combination keeps the cache file name a
+// fixed length. Prefer the lock file content when present; otherwise fall back to the resolved
+// references and runtime assemblies so the key still moves when the dependency set changes.
+let internal computeDependencyAwareHash
+    (existingHash: string)
+    (lockFilePath: string)
+    (references: string list)
+    (runtimeAssemblies: Runners.AssemblyInfo list)
+    =
+    let dependencyHash =
+        let depInput =
+            if File.Exists lockFilePath then
+                File.ReadAllText lockFilePath
+            else
+                references
+                @ (runtimeAssemblies
+                   |> List.map (fun a -> sprintf "%s;%s;%s" a.FullName a.Version a.Location))
+                |> List.sort
+                |> String.concat "\n"
+
+        HashGeneration.getStringHash depInput
+
+    HashGeneration.getStringHash (existingHash + "|" + dependencyHash)
+
 let paketCachingProvider
     (config: FakeConfig)
     cacheDir
@@ -494,29 +523,9 @@ let paketCachingProvider
                     References = references @ context.Config.CompileOptions.FsiOptions.References
                     Debug = Some Yaaf.FSharp.Scripting.DebugMode.Portable }
 
-            // Fold the resolved dependency set into the cache key. The script hash computed upstream
-            // covers only the script text and fsi args, not the paket-resolved references, which are
-            // injected here. Without this, a paket.lock change that pulls in new package versions
-            // leaves the script hash - and therefore CachedAssemblyFilePath - unchanged, so the DLL
-            // compiled against the OLD versions is reused: a MissingMethodException/TypeLoadException
-            // at runtime, or silently stale behaviour from inlined values baked into the old assembly.
-            // Re-hashing the combination keeps the cache file name a fixed length.
-            let dependencyHash =
-                let depInput =
-                    if File.Exists lockFilePath.FullName then
-                        File.ReadAllText lockFilePath.FullName
-                    else
-                        references
-                        @ (runtimeAssemblies
-                           |> List.map (fun a -> sprintf "%s;%s;%s" a.FullName a.Version a.Location))
-                        |> List.sort
-                        |> String.concat "\n"
-
-                HashGeneration.getStringHash depInput
-
             let newContext =
                 { context with
-                    Hash = HashGeneration.getStringHash (context.Hash + "|" + dependencyHash)
+                    Hash = computeDependencyAwareHash context.Hash lockFilePath.FullName references runtimeAssemblies
                     Config =
                         { context.Config with
                             CompileOptions = { context.Config.CompileOptions with FsiOptions = newAdditionalArgs }

@@ -172,8 +172,7 @@ let tests =
 
                use cts = new System.Threading.CancellationTokenSource()
 
-               let ctx =
-                   TargetContext.Create "d" targets [] cts.Token
+               let ctx = TargetContext.Create "d" targets [] cts.Token
 
                let mgr = Target.ParallelRunner.createCtxMgr order ctx
 
@@ -193,8 +192,7 @@ let tests =
                Expect.equal firstTarget.Value.Name "a" "Expected target a"
 
                // Two more workers ask for work; both must park because b/c depend on the unfinished a.
-               let parked =
-                   [ for _ in 1..2 -> mgr.GetNextTarget ctx |> Async.StartAsTask ]
+               let parked = [ for _ in 1..2 -> mgr.GetNextTarget ctx |> Async.StartAsTask ]
 
                // Let the workers actually park before cancelling, so this exercises the Cancel-driven
                // drain (no further GetNextTarget will arrive) rather than the GetNextTarget check.
