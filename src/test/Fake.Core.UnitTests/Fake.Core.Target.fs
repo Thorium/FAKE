@@ -153,6 +153,64 @@ let tests =
                Expect.isNone target "expected no next target"
 
 
+           Fake.ContextHelper.fakeContextTestCase "cancellation releases workers parked in the parallel runner"
+           <| fun _ ->
+               // Diamond so that after "a" is handed out (but never reported finished) every other
+               // worker has nothing runnable and parks in the wait list awaiting a TaskCompletionSource.
+               Target.create "a" ignore
+               Target.create "b" ignore
+               Target.create "c" ignore
+               Target.create "d" ignore
+
+               "a" ==> "b" |> ignore
+               "a" ==> "c" |> ignore
+               "b" ==> "d" |> ignore
+               "c" ==> "d" |> ignore
+
+               let order = Target.determineBuildOrder "d"
+               let targets = order |> Seq.concat |> Seq.toList
+
+               use cts = new System.Threading.CancellationTokenSource()
+
+               let ctx = TargetContext.Create "d" targets [] cts.Token
+
+               let mgr = Target.ParallelRunner.createCtxMgr order ctx
+
+               let waitTask (t: System.Threading.Tasks.Task<_>) message =
+                   if not (t.Wait 10000) then
+                       failwithf "%s" message
+
+                   t.Result
+
+               // Take the only initially-runnable target ("a") without ever reporting it finished.
+               let firstTarget =
+                   let t = mgr.GetNextTarget ctx |> Async.StartAsTask
+                   let _, target = waitTask t "GetNextTarget for the first target hung"
+                   target
+
+               Expect.isSome firstTarget "expected the first runnable target"
+               Expect.equal firstTarget.Value.Name "a" "Expected target a"
+
+               // Two more workers ask for work; both must park because b/c depend on the unfinished a.
+               let parked = [ for _ in 1..2 -> mgr.GetNextTarget ctx |> Async.StartAsTask ]
+
+               // Let the workers actually park before cancelling, so this exercises the Cancel-driven
+               // drain (no further GetNextTarget will arrive) rather than the GetNextTarget check.
+               Async.Sleep 500 |> Async.RunSynchronously
+
+               Expect.isFalse
+                   (parked |> List.exists (fun t -> t.IsCompleted))
+                   "workers should be parked, not completed, before cancellation"
+
+               cts.Cancel()
+
+               for t in parked do
+                   let _, target =
+                       waitTask t "a parked worker did not complete after cancellation (deadlock)"
+
+                   Expect.isNone target "a cancelled worker must be released with no target"
+
+
            Fake.ContextHelper.fakeContextTestCase "check simple parallelism"
            <| fun _ ->
                Target.create "a" ignore

@@ -171,7 +171,15 @@ module VSTest =
             Trace.trace (sprintf "Saved args to '%s' with value: %s" path generatedArgs))
         |> CreateProcess.addOnFinally (fun () -> File.Delete path)
         |> CreateProcess.addOnExited (fun _ exitCode ->
-            if exitCode > 0 && parameters.ErrorLevel <> ErrorLevel.DontFailBuild then
+            // A negative exit code means the test host itself crashed (e.g. -532462766 for an
+            // unhandled CLR exception, -1073741819 for an access violation) rather than reporting
+            // failing tests. Such a crash must fail the build even under DontFailBuild, otherwise a
+            // runner that dies mid-run reports zero failures and the build goes green. Positive
+            // non-zero codes are ordinary test failures and honour the configured ErrorLevel.
+            let crashed = exitCode < 0
+            let testsFailed = exitCode > 0 && parameters.ErrorLevel <> ErrorLevel.DontFailBuild
+
+            if crashed || testsFailed then
                 let message =
                     sprintf "%sVSTest test run failed with exit code %i" Environment.NewLine exitCode
 

@@ -394,14 +394,21 @@ module Process =
     let private getStartedProcesses, _, private setStartedProcesses =
         FakeVar.defineAllowNoContext<ProcessList> startedProcessesVar
 
+    let private processListLock = obj ()
+
     let private doWithProcessList f =
         if Context.isFakeContext () then
-            match getStartedProcesses () with
-            | Some h -> Some(f h)
-            | None ->
-                let h = new ProcessList()
-                setStartedProcesses h
-                Some(f h)
+            // The get-or-create must be atomic: under the parallel target runner two workers can both
+            // observe None on the first process start, each allocate a ProcessList and register their
+            // own PID, and the second setStartedProcesses then overwrites the first - so the losing
+            // list's PID is never tracked and killAllCreatedProcesses (Ctrl+C cleanup) leaks it.
+            lock processListLock (fun () ->
+                match getStartedProcesses () with
+                | Some h -> Some(f h)
+                | None ->
+                    let h = new ProcessList()
+                    setStartedProcesses h
+                    Some(f h))
         else
             None
 

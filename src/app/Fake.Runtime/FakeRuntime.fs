@@ -46,6 +46,35 @@ let internal filterValidAssembly (logLevel: VerboseLevel) (isSdk, isReferenceAss
 
         None
 
+// Fold the resolved dependency set into the cache key. The script hash computed upstream
+// covers only the script text and fsi args, not the paket-resolved references. Without this,
+// a paket.lock change that pulls in new package versions leaves the script hash - and therefore
+// CachedAssemblyFilePath - unchanged, so the DLL compiled against the OLD versions is reused: a
+// MissingMethodException/TypeLoadException at runtime, or silently stale behaviour from inlined
+// values baked into the old assembly. Re-hashing the combination keeps the cache file name a
+// fixed length. Prefer the lock file content when present; otherwise fall back to the resolved
+// references and runtime assemblies so the key still moves when the dependency set changes.
+let internal computeDependencyAwareHash
+    (existingHash: string)
+    (lockFilePath: string)
+    (references: string list)
+    (runtimeAssemblies: Runners.AssemblyInfo list)
+    =
+    let dependencyHash =
+        let depInput =
+            if File.Exists lockFilePath then
+                File.ReadAllText lockFilePath
+            else
+                references
+                @ (runtimeAssemblies
+                   |> List.map (fun a -> sprintf "%s;%s;%s" a.FullName a.Version a.Location))
+                |> List.sort
+                |> String.concat "\n"
+
+        HashGeneration.getStringHash depInput
+
+    HashGeneration.getStringHash (existingHash + "|" + dependencyHash)
+
 let paketCachingProvider
     (config: FakeConfig)
     cacheDir
@@ -494,19 +523,21 @@ let paketCachingProvider
                     References = references @ context.Config.CompileOptions.FsiOptions.References
                     Debug = Some Yaaf.FSharp.Scripting.DebugMode.Portable }
 
-            { context with
-                Config =
-                    { context.Config with
-                        CompileOptions = { context.Config.CompileOptions with FsiOptions = newAdditionalArgs }
-                        RuntimeOptions =
-                            { context.Config.RuntimeOptions with
-                                _RuntimeDependencies =
-                                    runtimeAssemblies @ context.Config.RuntimeOptions.RuntimeDependencies
-                                _NativeLibraries = nativeLibraries @ context.Config.RuntimeOptions.NativeLibraries }
+            let newContext =
+                { context with
+                    Hash = computeDependencyAwareHash context.Hash lockFilePath.FullName references runtimeAssemblies
+                    Config =
+                        { context.Config with
+                            CompileOptions = { context.Config.CompileOptions with FsiOptions = newAdditionalArgs }
+                            RuntimeOptions =
+                                { context.Config.RuntimeOptions with
+                                    _RuntimeDependencies =
+                                        runtimeAssemblies @ context.Config.RuntimeOptions.RuntimeDependencies
+                                    _NativeLibraries = nativeLibraries @ context.Config.RuntimeOptions.NativeLibraries } } }
 
-                     } },
+            newContext,
             let assemblyPath, warningsFile =
-                context.CachedAssemblyFilePath + ".dll", context.CachedAssemblyFilePath + ".warnings"
+                newContext.CachedAssemblyFilePath + ".dll", newContext.CachedAssemblyFilePath + ".warnings"
 
             if File.Exists(assemblyPath) && File.Exists(warningsFile) then
                 Some

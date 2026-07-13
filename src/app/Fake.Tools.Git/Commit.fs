@@ -15,7 +15,7 @@ module Commit =
     /// <param name="repositoryDir">The git repository.</param>
     /// <param name="message">The commit message text.</param>
     let exec repositoryDir message =
-        sprintf "commit -m \"%s\"" message
+        Args.toWindowsCommandLine [ "commit"; "-m"; message ]
         |> CommandHelper.runSimpleGitCommand repositoryDir
         |> Trace.trace
 
@@ -27,6 +27,6 @@ module Commit =
     /// <param name="shortMessage">The commit short (title) message text.</param>
     /// <param name="extendedMessage">The commit extended (description) message text.</param>
     let execExtended repositoryDir shortMessage extendedMessage =
-        sprintf "commit -m \"%s\" -m \"%s\"" shortMessage extendedMessage
+        Args.toWindowsCommandLine [ "commit"; "-m"; shortMessage; "-m"; extendedMessage ]
         |> CommandHelper.runSimpleGitCommand repositoryDir
         |> Trace.trace

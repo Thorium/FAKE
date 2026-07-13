@@ -922,7 +922,11 @@ module Target =
         // Centralized handling of target context and next target logic...
         [<NoComparison>]
         [<NoEquality>]
-        type RunnerHelper = GetNextTarget of TargetContext * AsyncReplyChannel<Async<TargetContext * Target option>>
+        type RunnerHelper =
+            | GetNextTarget of TargetContext * AsyncReplyChannel<Async<TargetContext * Target option>>
+            /// Sent when the build is cancelled so the scheduler can release workers parked in the
+            /// wait list even if no further GetNextTarget message will ever arrive to trigger a drain.
+            | Cancel
 
         type IRunnerHelper =
             abstract GetNextTarget: TargetContext -> Async<TargetContext * Target option>
@@ -945,6 +949,15 @@ module Target =
                             let! msg = inbox.Receive()
 
                             match msg with
+                            | Cancel ->
+                                // Release every parked worker so runOptimal's Task.WhenAll can
+                                // complete during a cancelled build. A worker parked in waitList
+                                // awaits a TaskCompletionSource that nothing else ever completes once
+                                // no further GetNextTarget arrives, which would otherwise hang forever.
+                                for w: TaskCompletionSource<TargetContext * Target option> in waitList do
+                                    w.SetResult(ctx, None)
+
+                                waitList <- []
                             | GetNextTarget (newCtx, reply) ->
                                 let failwithf pf =
                                     // handle reply before throwing.
@@ -966,7 +979,10 @@ module Target =
                                     runningTasks
                                     |> List.filter (fun t -> not (known.ContainsKey(String.toLower t.Name)))
 
-                                if known.Count = targetCount then
+                                // Drain when everything is done, or when the build is cancelled: in
+                                // either case no more work should be handed out, and every waiting
+                                // worker must be released so the run can finish instead of deadlocking.
+                                if known.Count = targetCount || ctx.CancellationToken.IsCancellationRequested then
                                     for w: TaskCompletionSource<TargetContext * Target option> in waitList do
                                         w.SetResult(ctx, None)
 
@@ -1070,11 +1086,16 @@ module Target =
                             let! msg = inbox.Receive()
 
                             match msg with
+                            | Cancel -> ()
                             | GetNextTarget (_, reply) ->
                                 reply.Reply(async { return raise <| exn ("mailbox failed", e) })
                 }
 
             let mbox = MailboxProcessor.Start(body)
+            // Poke the mailbox on cancellation so it drains the wait list even when every worker is
+            // parked and no further GetNextTarget would otherwise be sent. Posting is thread-safe and
+            // keeps all waitList mutation on the mailbox thread.
+            ctx.CancellationToken.Register(fun () -> mbox.Post Cancel) |> ignore
 
             { new IRunnerHelper with
                 member _.GetNextTarget ctx =
